@@ -11,26 +11,27 @@ class TukaApp extends StatelessWidget {
     return MaterialApp(
       title: 'Tuka',
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
-      home: const FilteredChallengeScreen(),
+      home: const ChallengeScreen(),
     );
   }
 }
 
-class FilteredChallengeScreen extends StatefulWidget {
-  const FilteredChallengeScreen({super.key});
+class ChallengeScreen extends StatefulWidget {
+  const ChallengeScreen({super.key});
   @override
-  State<FilteredChallengeScreen> createState() => _FilteredChallengeScreenState();
+  State<ChallengeScreen> createState() => _ChallengeScreenState();
 }
 
-class _FilteredChallengeScreenState extends State<FilteredChallengeScreen> {
-  String _filter = 'around'; // around, anywhere, only
+class _ChallengeScreenState extends State<ChallengeScreen> {
+  String _filter = 'around';
   String _city = '';
   List<dynamic> _challenges = [];
   bool _loading = false;
 
-  // 📍 Mock user location (replace with geolocator later)
-  final double _userLat = 0.3476;
-  final double _userLng = 32.5825;
+  // Mock user (Phase 1)
+  final String _userId = 'mock-user-123';
+  final double _userLat = 0.3150; // Near Kampala Road
+  final double _userLng = 32.5800;
 
   Future<void> _fetchChallenges() async {
     setState(() => _loading = true);
@@ -44,9 +45,35 @@ class _FilteredChallengeScreenState extends State<FilteredChallengeScreen> {
         setState(() => _challenges = json.decode(res.body));
       }
     } catch (e) {
-      debugPrint('❌ Fetch error: $e');
+      debugPrint('❌ Error: $e');
     } finally {
       setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _submitProof(String challengeId) async {
+    final proof = "Screenshot uploaded at ${DateTime.now()}"; // Mock proof
+    try {
+      final res = await http.post(
+        Uri.parse('http://10.0.2.2:3000/api/submissions'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'challengeId': challengeId,
+          'userId': _userId,
+          'proofText': proof,
+          'userLat': _userLat,
+          'userLng': _userLng,
+        }),
+      );
+      if (res.statusCode == 201) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Submission sent! Awaiting approval.'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('❌ Failed to submit'), backgroundColor: Colors.red),
+      );
     }
   }
 
@@ -81,7 +108,7 @@ class _FilteredChallengeScreenState extends State<FilteredChallengeScreen> {
                   Padding(
                     padding: const EdgeInsets.only(left: 8),
                     child: SizedBox(
-                      width: 120,
+                      width: 100,
                       child: TextField(
                         decoration: const InputDecoration(hintText: 'City'),
                         onChanged: (v) => setState(() => _city = v),
@@ -102,24 +129,36 @@ class _FilteredChallengeScreenState extends State<FilteredChallengeScreen> {
           _loading
               ? const Expanded(child: Center(child: CircularProgressIndicator()))
               : _challenges.isEmpty
-                  ? const Expanded(child: Center(child: Text('No challenges match your filter.')))
+                  ? const Expanded(child: Center(child: Text('No challenges found.')))
                   : Expanded(
                       child: ListView.builder(
                         itemCount: _challenges.length,
                         itemBuilder: (context, i) {
                           final c = _challenges[i];
+                          final fee = (c['rewardPool'] * c['feePercent']).round();
+                          final toUsers = c['rewardPool'] - fee;
+
                           return Card(
                             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             child: ListTile(
                               leading: Icon(
-                                c['type'] == 'REMOTE' ? Icons.cloud_outlined : Icons.location_on,
-                                color: c['type'] == 'REMOTE' ? Colors.blue : Colors.red,
+                                c['locationType'] == 'REMOTE' ? Icons.cloud_outlined : Icons.location_on,
+                                color: c['locationType'] == 'REMOTE' ? Colors.blue : Colors.red,
                               ),
-                              title: Text(c['title']),
-                              subtitle: Text('${c['sponsor']} • ${c['type']}'),
-                              trailing: c['distance'] != null
-                                  ? Text('${c['distance']} km', style: TextStyle(color: Colors.grey[700]))
-                                  : null,
+                              title: Text(c['title'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('${c['sponsor']['name']} • ${c['city']}'),
+                                  Text('💰 Pool: UGX ${c['rewardPool']}', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w600)),
+                                  Text('🔒 To Users: UGX $toUsers (5% fee deducted)', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                  if (c['distance'] != null) Text('📍 ${c['distance']} km away', style: const TextStyle(fontSize: 12)),
+                                ],
+                              ),
+                              trailing: ElevatedButton(
+                                onPressed: () => _submitProof(c['id']),
+                                child: const Text('Join'),
+                              ),
                             ),
                           );
                         },
