@@ -1,24 +1,65 @@
 const express = require('express');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const prisma = new PrismaClient();
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Create uploads directory
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|mp4|mov|avi/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    if (extname && mimetype) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only images and videos allowed'));
+    }
+  }
+});
+
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(uploadsDir));
 
-// 📍 GET /api/challenges?filter=around&lat=0.34&lng=32.58&radius=20
-// 📍 GET /api/challenges?filter=anywhere
-// 📍 GET /api/challenges?filter=only&city=Kampala
+// Health check
+app.get('/', (req, res) => {
+  res.json({ status: '🟢 Tuka Backend Running' });
+});
+
+// GET Challenges with filters
 app.get('/api/challenges', async (req, res) => {
   const { filter = 'around', lat, lng, radius = 20, city } = req.query;
   
   let challenges = await prisma.challenge.findMany({
     where: { status: 'ACTIVE' },
-    include: { sponsor: { select: { name: true } } }
+    include: { 
+      sponsor: { select: { name: true } },
+      _count: { select: { submissions: true } }
+    }
   });
 
-  // Helper: Haversine distance (km)
   const getDistance = (lat1, lng1, lat2, lng2) => {
     const R = 6371;
     const toRad = v => v * Math.PI / 180;
@@ -48,42 +89,107 @@ app.get('/api/challenges', async (req, res) => {
   res.json(results);
 });
 
-// 📝 POST /api/submissions
-app.post('/api/submissions', async (req, res) => {
+// POST Submission with file upload
+app.post('/api/submissions', upload.single('proofFile'), async (req, res) => {
   const { challengeId, userId, proofText, userLat, userLng } = req.body;
   
   try {
+    const proofFileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    const proofType = req.file ? (req.file.mimetype.startsWith('video') ? 'VIDEO' : 'IMAGE') : 'TEXT';
+    
     const submission = await prisma.submission.create({
-      data: { challengeId, userId, proofText, userLat, userLng, status: 'PENDING' }
+      data: { 
+        challengeId, 
+        userId, 
+        proofText, 
+        proofFileUrl,
+        proofType,
+        userLat, 
+        userLng, 
+        status: 'PENDING' 
+      }
     });
     
-    // Audit log
     await prisma.auditLog.create({
-      data: { action: 'SUBMISSION_CREATED', details: JSON.stringify({ id: submission.id, challengeId }) }
+      data: { action: 'SUBMISSION_CREATED', details: JSON.stringify({ id: submission.id }) }
     });
     
-    res.status(201).json({ success: true, message: 'Submission received!' });
+    res.status(201).json({ success: true, message: 'Submitted! Awaiting approval.' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// ✅ POST /api/admin/approve (Simple mock admin action)
-app.post('/api/admin/approve', async (req, res) => {
-  const { submissionId } = req.body;
+// GET Sponsor submissions
+app.get('/api/sponsor/:sponsorId/submissions', async (req, res) => {
+  const { sponsorId } = req.params;
+  
   try {
-    await prisma.submission.update({
-      where: { id: submissionId },
-      data: { status: 'APPROVED' }
+    const submissions = await prisma.submission.findMany({
+      where: { challenge: { sponsorId } },
+      include: {
+        user: { select: { name: true, phone: true } },
+        challenge: { select: { title: true } }
+      },
+      orderBy: { submittedAt: 'desc' }
     });
-    await prisma.auditLog.create({
-      data: { action: 'SUBMISSION_APPROVED', details: submissionId }
-    });
-    res.json({ success: true, message: 'Approved & queued for payout' });
+    
+    res.json(submissions);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-const PORT = 3000;
-app.listen(PORT, () => console.log(`🚀 Tuka Backend running on http://localhost:${PORT}`));
+// POST Approve submission
+app.post('/api/submissions/:id/approve', async (req, res) => {
+  const { id } = req.params;
+  const { sponsorId } = req.body;
+  
+  try {
+    const submission = await prisma.submission.findUnique({
+      where: { id },
+      include: { challenge: true }
+    });
+    
+    if (submission.challenge.sponsorId !== sponsorId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    await prisma.submission.update({
+      where: { id },
+      data: { status: 'APPROVED', approvedAt: new Date() }
+    });
+    
+    res.json({ success: true, message: 'Approved! User will be paid.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST Reject submission
+app.post('/api/submissions/:id/reject', async (req, res) => {
+  const { id } = req.params;
+  const { sponsorId, reason } = req.body;
+  
+  try {
+    const submission = await prisma.submission.findUnique({
+      where: { id },
+      include: { challenge: true }
+    });
+    
+    if (submission.challenge.sponsorId !== sponsorId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    
+    await prisma.submission.update({
+      where: { id },
+      data: { status: 'REJECTED', rejectionReason: reason }
+    });
+    
+    res.json({ success: true, message: 'Rejected.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
