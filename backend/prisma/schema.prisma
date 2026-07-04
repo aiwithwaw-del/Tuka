@@ -15,6 +15,7 @@ model User {
   challenges  Challenge[]  @relation("SponsorChallenges")
   submissions Submission[]
   createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 }
 
 enum Role {
@@ -29,16 +30,17 @@ model Challenge {
   sponsor       User         @relation("SponsorChallenges", fields: [sponsorId], references: [id])
   title         String
   description   String
-  rewardPool    Int
-  feePercent    Float        @default(0.05)
+  rewardPool    Int          // Total UGX
+  feePercent    Float        @default(0.05) // 5%
   locationType  LocationType @default(REMOTE)
   city          String?
   lat           Float?
   lng           Float?
   radiusMeters  Int          @default(5000)
-  status        String       @default("ACTIVE")
+  status        String       @default("ACTIVE") // DRAFT, ACTIVE, COMPLETED, CANCELLED
   submissions   Submission[]
   createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 }
 
 enum LocationType {
@@ -55,18 +57,21 @@ model Submission {
   user            User      @relation(fields: [userId], references: [id])
   proofText       String?
   proofFileUrl    String?
-  proofType       String?
+  proofType       String?   // IMAGE, VIDEO, TEXT
   userLat         Float?
   userLng         Float?
-  status          String    @default("PENDING")
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
   rejectionReason String?
   submittedAt     DateTime  @default(now())
   approvedAt      DateTime?
+  updatedAt       DateTime  @updatedAt
 }
 
 model AuditLog {
   id        String   @id @default(uuid())
   action    String
+  userId    String?
   details   String
+  ipAddress String?
   createdAt DateTime @default(now())
 }
